@@ -1,29 +1,30 @@
-import { BASE_URL, headers, INDUSTRY_MAPPING } from './config/tmdb';
+import { BASE_URL, headers, INDUSTRY_MAPPING, FALLBACK_ENDPOINTS } from './config/tmdb';
 import { Movie, TVShow } from './types/tmdb';
 import { getCertificationQuery } from './utils/certifications';
 import { getRandomPage } from './utils/pagination';
+import { NetworkUtils } from './utils/network';
 
-// Real-time cache with shorter TTL for fresh data
+// Enhanced cache with better ISP compatibility
 class RealTimeCache {
   private capacity: number;
   private cache: Map<string, { data: any; timestamp: number }>;
   private ttl: number;
 
-  constructor(capacity: number, ttlMinutes: number = 1) {
+  constructor(capacity: number, ttlMinutes: number = 2) {
     this.capacity = capacity;
     this.cache = new Map();
-    this.ttl = ttlMinutes * 60 * 1000; // Convert to milliseconds
+    this.ttl = ttlMinutes * 60 * 1000;
   }
 
   get(key: string): any | undefined {
     const item = this.cache.get(key);
     if (item && Date.now() - item.timestamp < this.ttl) {
       this.cache.delete(key);
-      this.cache.set(key, item); // Move to end (most recently used)
+      this.cache.set(key, item);
       return item.data;
     }
     if (item) {
-      this.cache.delete(key); // Remove expired item
+      this.cache.delete(key);
     }
     return undefined;
   }
@@ -41,10 +42,9 @@ class RealTimeCache {
   }
 }
 
-// Shorter cache for real-time data
-const cache = new RealTimeCache(50, 1); // 1 minute TTL
+const cache = new RealTimeCache(100, 2);
 
-async function fetchWithRealTimeCache(url: string, options: RequestInit, forceRefresh: boolean = false) {
+async function fetchWithEnhancedCache(url: string, options: RequestInit, forceRefresh: boolean = false) {
   const cacheKey = url;
   
   if (!forceRefresh) {
@@ -55,24 +55,30 @@ async function fetchWithRealTimeCache(url: string, options: RequestInit, forceRe
   }
 
   try {
-    const response = await fetch(url, {
-      ...options,
-      cache: 'no-store', // Ensure fresh data from API
-      headers: {
-        ...options.headers,
-        'Cache-Control': 'no-cache',
-      }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+    // Extract path from full URL for fallback
+    const urlObj = new URL(url);
+    const path = urlObj.pathname + urlObj.search;
+
+    // Try primary endpoint first, then fallbacks
+    const response = await NetworkUtils.fetchWithFallback(
+      [BASE_URL, ...FALLBACK_ENDPOINTS],
+      path,
+      options
+    );
     
     const data = await response.json();
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    console.error('Fetch error:', error);
+    console.error('Enhanced fetch error:', NetworkUtils.getErrorMessage(error));
+    
+    // Return cached data if available, even if expired
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.warn('Returning stale cached data due to network error');
+      return cached;
+    }
+    
     throw error;
   }
 }
@@ -102,20 +108,19 @@ export const fetchMovies = async (params: {
     baseUrl += getCertificationQuery(industry, contentRating);
   }
 
-  const randomPage = await getRandomPage(baseUrl);
-  const url = `${baseUrl}&page=${randomPage}`;
-
   try {
-    const data = await fetchWithRealTimeCache(url, { headers });
+    const randomPage = await getRandomPage(baseUrl);
+    const url = `${baseUrl}&page=${randomPage}`;
+    const data = await fetchWithEnhancedCache(url, { headers });
     
     if (!data.results?.length) {
-      const firstPageData = await fetchWithRealTimeCache(`${baseUrl}&page=1`, { headers });
+      const firstPageData = await fetchWithEnhancedCache(`${baseUrl}&page=1`, { headers });
       return (firstPageData.results || []).slice(0, 3);
     }
     
     return data.results.slice(0, 3);
   } catch (error) {
-    console.error('Error fetching movies:', error);
+    console.error('Error fetching movies:', NetworkUtils.getErrorMessage(error));
     return [];
   }
 };
@@ -141,11 +146,10 @@ export const fetchTVShows = async (params: {
   if (year) baseUrl += `&first_air_date_year=${year}`;
   if (genre) baseUrl += `&with_genres=${genre}`;
 
-  const randomPage = await getRandomPage(baseUrl);
-  const url = `${baseUrl}&page=${randomPage}`;
-
   try {
-    const data = await fetchWithRealTimeCache(url, { headers });
+    const randomPage = await getRandomPage(baseUrl);
+    const url = `${baseUrl}&page=${randomPage}`;
+    const data = await fetchWithEnhancedCache(url, { headers });
     
     let results = data.results || [];
     
@@ -159,7 +163,7 @@ export const fetchTVShows = async (params: {
     }
     
     if (!results.length) {
-      const firstPageData = await fetchWithRealTimeCache(`${baseUrl}&page=1`, { headers });
+      const firstPageData = await fetchWithEnhancedCache(`${baseUrl}&page=1`, { headers });
       results = (firstPageData.results || []).filter((show: TVShow) => {
         if (!industry) return true;
         const industryConfig = INDUSTRY_MAPPING[industry];
@@ -169,33 +173,33 @@ export const fetchTVShows = async (params: {
     
     return results.slice(0, 3);
   } catch (error) {
-    console.error('Error fetching TV shows:', error);
+    console.error('Error fetching TV shows:', NetworkUtils.getErrorMessage(error));
     return [];
   }
 };
 
 export const fetchMovieDetails = async (id: number): Promise<Movie> => {
   const url = `${BASE_URL}/movie/${id}?language=en-US`;
-  return fetchWithRealTimeCache(url, { headers });
+  return fetchWithEnhancedCache(url, { headers });
 };
 
 export const fetchMovieCredits = async (id: number) => {
   const url = `${BASE_URL}/movie/${id}/credits?language=en-US`;
-  return fetchWithRealTimeCache(url, { headers });
+  return fetchWithEnhancedCache(url, { headers });
 };
 
 export const fetchTVShowDetails = async (id: number): Promise<TVShow> => {
   const url = `${BASE_URL}/tv/${id}?language=en-US`;
-  return fetchWithRealTimeCache(url, { headers });
+  return fetchWithEnhancedCache(url, { headers });
 };
 
 export const fetchTrending = async (forceRefresh: boolean = false) => {
   const url = `${BASE_URL}/trending/movie/day?language=en-US`;
   try {
-    const data = await fetchWithRealTimeCache(url, { headers }, forceRefresh);
+    const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching trending movies:', error);
+    console.error('Error fetching trending movies:', NetworkUtils.getErrorMessage(error));
     return [];
   }
 };
@@ -203,10 +207,10 @@ export const fetchTrending = async (forceRefresh: boolean = false) => {
 export const fetchPopular = async (forceRefresh: boolean = false) => {
   const url = `${BASE_URL}/movie/popular?language=en-US`;
   try {
-    const data = await fetchWithRealTimeCache(url, { headers }, forceRefresh);
+    const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching popular movies:', error);
+    console.error('Error fetching popular movies:', NetworkUtils.getErrorMessage(error));
     return [];
   }
 };
@@ -214,10 +218,10 @@ export const fetchPopular = async (forceRefresh: boolean = false) => {
 export const fetchNowPlaying = async (forceRefresh: boolean = false) => {
   const url = `${BASE_URL}/movie/now_playing?language=en-US&region=US`;
   try {
-    const data = await fetchWithRealTimeCache(url, { headers }, forceRefresh);
+    const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching now playing movies:', error);
+    console.error('Error fetching now playing movies:', NetworkUtils.getErrorMessage(error));
     return [];
   }
 };
@@ -225,10 +229,10 @@ export const fetchNowPlaying = async (forceRefresh: boolean = false) => {
 export const fetchTopRatedMovies = async (forceRefresh: boolean = false) => {
   const url = `${BASE_URL}/movie/top_rated?language=en-US`;
   try {
-    const data = await fetchWithRealTimeCache(url, { headers }, forceRefresh);
+    const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching top rated movies:', error);
+    console.error('Error fetching top rated movies:', NetworkUtils.getErrorMessage(error));
     return [];
   }
 };
@@ -236,10 +240,10 @@ export const fetchTopRatedMovies = async (forceRefresh: boolean = false) => {
 export const fetchTopRatedTVShows = async (forceRefresh: boolean = false) => {
   const url = `${BASE_URL}/tv/top_rated?language=en-US`;
   try {
-    const data = await fetchWithRealTimeCache(url, { headers }, forceRefresh);
+    const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching top rated TV shows:', error);
+    console.error('Error fetching top rated TV shows:', NetworkUtils.getErrorMessage(error));
     return [];
   }
 };
@@ -247,15 +251,14 @@ export const fetchTopRatedTVShows = async (forceRefresh: boolean = false) => {
 export const fetchMovieTrailer = async (id: number) => {
   const url = `${BASE_URL}/movie/${id}/videos?language=en-US`;
   try {
-    const data = await fetchWithRealTimeCache(url, { headers });
+    const data = await fetchWithEnhancedCache(url, { headers });
     return data.results?.find((video: any) => video.type === 'Trailer');
   } catch (error) {
-    console.error('Error fetching movie trailer:', error);
+    console.error('Error fetching movie trailer:', NetworkUtils.getErrorMessage(error));
     return null;
   }
 };
 
-// Clear cache function for manual refresh
 export const clearCache = () => {
   cache.clear();
 };

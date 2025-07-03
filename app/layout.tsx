@@ -4,6 +4,7 @@ import { Inter } from 'next/font/google';
 import { ThemeProvider } from '@/components/theme-provider';
 import { Toaster } from '@/components/ui/toaster';
 import { Analytics } from '@vercel/analytics/react';
+import { ErrorBoundary } from '@/components/error-boundary';
 import Header from '@/components/header';
 import Footer from '@/components/footer';
 
@@ -47,22 +48,30 @@ export default function RootLayout({
         <link rel="preconnect" href="https://api.themoviedb.org" />
         <link rel="dns-prefetch" href="https://image.tmdb.org" />
         <link rel="preconnect" href="https://image.tmdb.org" />
+        <link rel="dns-prefetch" href="https://api.tmdb.org" />
+        <link rel="preconnect" href="https://api.tmdb.org" />
       </head>
       <body className={`${inter.className} min-h-screen bg-fixed`}>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="dark"
-          enableSystem={false}
-          forcedTheme="dark"
-          disableTransitionOnChange
-        >
-          <div className="flex flex-col min-h-screen">
-            <Header />
-            <main className="flex-grow content-overlay">{children}</main>
-            <Footer />
-          </div>
-          <Toaster />
-        </ThemeProvider>
+        <ErrorBoundary>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="dark"
+            enableSystem={false}
+            forcedTheme="dark"
+            disableTransitionOnChange
+          >
+            <div className="flex flex-col min-h-screen">
+              <Header />
+              <main className="flex-grow content-overlay">
+                <ErrorBoundary>
+                  {children}
+                </ErrorBoundary>
+              </main>
+              <Footer />
+            </div>
+            <Toaster />
+          </ThemeProvider>
+        </ErrorBoundary>
         <Analytics />
       </body>
     </html>
