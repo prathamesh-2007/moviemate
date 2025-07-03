@@ -2,7 +2,8 @@ import { BASE_URL, headers, INDUSTRY_MAPPING, FALLBACK_ENDPOINTS } from './confi
 import { Movie, TVShow } from './types/tmdb';
 import { getCertificationQuery } from './utils/certifications';
 import { getRandomPage } from './utils/pagination';
-import { NetworkUtils } from './utils/network';
+import { EnhancedNetworkUtils } from './utils/enhanced-network';
+import { JioDetector } from './utils/jio-detector';
 
 // Enhanced cache with better ISP compatibility
 class RealTimeCache {
@@ -40,6 +41,11 @@ class RealTimeCache {
   clear(): void {
     this.cache.clear();
   }
+
+  has(key: string): boolean {
+    const item = this.cache.get(key);
+    return item ? Date.now() - item.timestamp < this.ttl : false;
+  }
 }
 
 const cache = new RealTimeCache(100, 2);
@@ -55,28 +61,26 @@ async function fetchWithEnhancedCache(url: string, options: RequestInit, forceRe
   }
 
   try {
-    // Extract path from full URL for fallback
-    const urlObj = new URL(url);
-    const path = urlObj.pathname + urlObj.search;
-
-    // Try primary endpoint first, then fallbacks
-    const response = await NetworkUtils.fetchWithFallback(
-      [BASE_URL, ...FALLBACK_ENDPOINTS],
-      path,
-      options
-    );
-    
+    // Use enhanced network utils for Jio compatibility
+    const response = await EnhancedNetworkUtils.fetchWithJioSupport(url, options);
     const data = await response.json();
     cache.set(cacheKey, data);
     return data;
   } catch (error) {
-    console.error('Enhanced fetch error:', NetworkUtils.getErrorMessage(error));
+    console.error('Enhanced fetch error:', error);
     
     // Return cached data if available, even if expired
     const cached = cache.get(cacheKey);
     if (cached) {
       console.warn('Returning stale cached data due to network error');
       return cached;
+    }
+    
+    // Provide helpful error message for Jio users
+    if (JioDetector.isJioNetwork() || JioDetector.isLikelyBlocked(error)) {
+      const jioError = new Error('Connection blocked by ISP. Please try the solutions in the help dialog.');
+      (jioError as any).isJioBlocked = true;
+      throw jioError;
     }
     
     throw error;
@@ -120,7 +124,7 @@ export const fetchMovies = async (params: {
     
     return data.results.slice(0, 3);
   } catch (error) {
-    console.error('Error fetching movies:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching movies:', error);
     return [];
   }
 };
@@ -173,7 +177,7 @@ export const fetchTVShows = async (params: {
     
     return results.slice(0, 3);
   } catch (error) {
-    console.error('Error fetching TV shows:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching TV shows:', error);
     return [];
   }
 };
@@ -199,7 +203,7 @@ export const fetchTrending = async (forceRefresh: boolean = false) => {
     const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching trending movies:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching trending movies:', error);
     return [];
   }
 };
@@ -210,7 +214,7 @@ export const fetchPopular = async (forceRefresh: boolean = false) => {
     const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching popular movies:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching popular movies:', error);
     return [];
   }
 };
@@ -221,7 +225,7 @@ export const fetchNowPlaying = async (forceRefresh: boolean = false) => {
     const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching now playing movies:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching now playing movies:', error);
     return [];
   }
 };
@@ -232,7 +236,7 @@ export const fetchTopRatedMovies = async (forceRefresh: boolean = false) => {
     const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching top rated movies:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching top rated movies:', error);
     return [];
   }
 };
@@ -243,7 +247,7 @@ export const fetchTopRatedTVShows = async (forceRefresh: boolean = false) => {
     const data = await fetchWithEnhancedCache(url, { headers }, forceRefresh);
     return data.results || [];
   } catch (error) {
-    console.error('Error fetching top rated TV shows:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching top rated TV shows:', error);
     return [];
   }
 };
@@ -254,11 +258,16 @@ export const fetchMovieTrailer = async (id: number) => {
     const data = await fetchWithEnhancedCache(url, { headers });
     return data.results?.find((video: any) => video.type === 'Trailer');
   } catch (error) {
-    console.error('Error fetching movie trailer:', NetworkUtils.getErrorMessage(error));
+    console.error('Error fetching movie trailer:', error);
     return null;
   }
 };
 
 export const clearCache = () => {
   cache.clear();
+};
+
+// Export function to check if error is Jio-related
+export const isJioBlockedError = (error: any): boolean => {
+  return error?.isJioBlocked === true;
 };
